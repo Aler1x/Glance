@@ -31,8 +31,9 @@ Carthage/Build/
 .AppleDouble
 .LSOverride
 
-# Local docs
+# Internal
 docs/
+scripts/
 
 # AI
 .claude/

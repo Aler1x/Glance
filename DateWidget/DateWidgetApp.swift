@@ -2,21 +2,36 @@
 //  DateWidgetApp.swift
 //  DateWidget
 //
-//  Created by Alerix and Claude on 26.05.2026.
-//
 
 import SwiftUI
+import WidgetKit
 
 @main
 struct DateWidgetApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-
     var body: some Scene {
-        WindowGroup {
-            DateWidgetView()
-                .background(.clear)
+        WindowGroup("Date Widget") {
+            ContentView()
         }
-        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
+    }
+}
+
+private struct ContentView: View {
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "calendar")
+                .font(.system(size: 56))
+                .foregroundStyle(.tint)
+
+            Text("Date Widget")
+                .font(.title2.bold())
+
+            Text("Add the widget from Notification Center or your desktop.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(32)
+        .frame(minWidth: 360, minHeight: 280)
     }
 }
