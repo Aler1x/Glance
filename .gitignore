@@ -30,3 +30,11 @@ Carthage/Build/
 .DS_Store
 .AppleDouble
 .LSOverride
+
+# Local docs
+docs/
+
+# AI
+.claude/
+.agents/
+.cursor/

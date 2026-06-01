@@ -1,4 +1,4 @@
-# DateWinget
+# DateWidget
 
 A macOS desktop widget built with SwiftUI. Shows the current date, a multi-timezone clock, and a monthly calendar — all wrapped in the macOS 26 Liquid Glass UI.
 
@@ -16,4 +16,4 @@ A macOS desktop widget built with SwiftUI. Shows the current date, a multi-timez
 
 ## Running
 
-Open `DateWinget.xcodeproj` in Xcode and hit **Run**.
+Open `DateWidget.xcodeproj` in Xcode and hit **Run**.

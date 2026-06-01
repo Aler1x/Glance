@@ -1,11 +1,10 @@
 //
-//  DateWingetApp.swift
-//  DateWinget
+//  AppDelegate.swift
+//  DateWidget
 //
 //  Created by Alerix and Claude on 26.05.2026.
 //
 
-import SwiftUI
 import AppKit
 
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -16,19 +15,5 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 window.backgroundColor = .clear
             }
         }
-    }
-}
-
-@main
-struct DateWingetApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .background(.clear)
-        }
-        .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)
     }
 }

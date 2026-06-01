@@ -1,19 +1,12 @@
 //
-//  ContentView.swift
-//  DateWinget
+//  DateWidgetView.swift
+//  DateWidget
 //
 //  Created by Alerix and Claude on 26.05.2026.
 //
 
 import SwiftUI
 internal import Combine
-
-struct ContentView: View {
-    var body: some View {
-        DateWidgetView()
-            .frame(width: 520, height: 230)
-    }
-}
 
 struct DateWidgetView: View {
     @State private var currentDate = Date()
@@ -32,6 +25,7 @@ struct DateWidgetView: View {
             .glassEffect(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         }
         .onReceive(timer) { currentDate = $0 }
+        .frame(width: 520, height: 230)
     }
 
     // MARK: - Left panel
@@ -181,6 +175,6 @@ struct DateWidgetView: View {
 }
 
 #Preview {
-    ContentView()
+    DateWidgetView()
         .padding(40)
 }
