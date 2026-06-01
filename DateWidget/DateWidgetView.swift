@@ -11,6 +11,7 @@ internal import Combine
 struct DateWidgetView: View {
     @State private var currentDate = Date()
     @StateObject private var weather = WeatherService()
+    @StateObject private var quote = QuoteService()
     private let timer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     private let newYork = TimeZone(identifier: "America/New_York") ?? .current
@@ -55,6 +56,18 @@ struct DateWidgetView: View {
                         .font(.system(size: 14, weight: .medium, design: .rounded))
                 }
                 .foregroundStyle(.secondary)
+            }
+
+            if !quote.text.isEmpty {
+                Text(quote.text)
+                    .font(.system(size: 11, weight: .regular, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(4)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.tertiary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
 
             Spacer()
