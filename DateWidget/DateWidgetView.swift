@@ -10,9 +10,11 @@ internal import Combine
 
 struct DateWidgetView: View {
     @State private var currentDate = Date()
+    @StateObject private var weather = WeatherService()
     private let timer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     private let newYork = TimeZone(identifier: "America/New_York") ?? .current
+    private let warsaw = TimeZone(identifier: "Europe/Warsaw") ?? .current
 
     var body: some View {
         GlassEffectContainer(spacing: 0) {
@@ -39,15 +41,14 @@ struct DateWidgetView: View {
             HStack(alignment: .center, spacing: 10) {
                 Text(dayString)
                     .font(.system(size: 70, weight: .bold, design: .rounded))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.5)
+                    .monospacedDigit()
+                    .frame(width: 100, alignment: .trailing)
 
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 4) {
-                        Image(systemName: "cloud")
+                        Image(systemName: weather.symbolName)
                             .font(.system(size: 13))
-                        Text("22°C")
+                        Text(weather.temperature)
                             .font(.system(size: 14, weight: .medium, design: .rounded))
                     }
                     Text(monthWeekdayString)
@@ -63,26 +64,28 @@ struct DateWidgetView: View {
     }
 
     private var timeRow: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "alarm")
-                .font(.system(size: 11))
-            Text(time(in: .current))
-
-            separator
-
-            Text("NY")
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .foregroundStyle(.tertiary)
-            Text(time(in: newYork))
+        HStack(spacing: 10) {
+            HStack(spacing: 4) {
+                Text("UA")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.tertiary)
+                Text(time(in: .current))
+            }
+            HStack(spacing: 4) {
+                Text("NY")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.tertiary)
+                Text(time(in: newYork))
+            }
+            HStack(spacing: 4) {
+                Text("WR")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.tertiary)
+                Text(time(in: warsaw))
+            }
         }
         .font(.system(size: 14, weight: .medium, design: .rounded))
         .foregroundStyle(.secondary)
-    }
-
-    private var separator: some View {
-        Text("·")
-            .font(.system(size: 11))
-            .foregroundStyle(.tertiary)
     }
 
     // MARK: - Right panel
@@ -116,12 +119,12 @@ struct DateWidgetView: View {
                         ZStack {
                             if isToday {
                                 Circle()
-                                    .fill(.primary)
+                                    .fill(.tertiary)
                                     .frame(width: 26, height: 26)
                             }
                             Text("\(day)")
                                 .font(.system(size: 12, weight: isToday ? .bold : .regular))
-                                .foregroundStyle(isToday ? AnyShapeStyle(.background) : AnyShapeStyle(.secondary))
+                                .foregroundStyle(AnyShapeStyle(.secondary))
                         }
                         .frame(maxWidth: .infinity)
                         .frame(height: 26)
