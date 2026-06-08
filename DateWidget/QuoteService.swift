@@ -14,15 +14,34 @@ enum QuoteService {
             let html = String(data: data, encoding: .utf8)
         else { return "" }
 
-        let pattern = #"id="ttm-advice-text-big"[^>]*>\s*([\s\S]*?)\s*</strong>"#
+        // The quote is split across two elements: the big "setup" line and the
+        // small "punchline" line. Join both.
+        let big = extract(id: "ttm-advice-text-big", from: html)
+        let small = extract(id: "ttm-advice-text-small", from: html)
+        return [big, small].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    /// Pulls the text content of the element carrying `id`, up to its closing tag.
+    private static func extract(id: String, from html: String) -> String {
+        let pattern = #"id="\#(id)"[^>]*>\s*([\s\S]*?)\s*</"#
         guard let regex = try? NSRegularExpression(pattern: pattern),
             let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
             let range = Range(match.range(at: 1), in: html)
         else { return "" }
+        return clean(String(html[range]))
+    }
 
-        let raw = String(html[range])
-            .replacingOccurrences(of: #"<[^>]+>"#, with: "\n", options: .regularExpression)
+    private static func clean(_ raw: String) -> String {
+        raw
+            .replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "&amp;",  with: "&")
+            .replacingOccurrences(of: "&lt;",   with: "<")
+            .replacingOccurrences(of: "&gt;",   with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&apos;", with: "'")
+            .replacingOccurrences(of: "&#39;",  with: "'")
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: #"\s+"#,  with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return raw
     }
 }
