@@ -15,10 +15,10 @@ enum QuoteService {
         else { return "" }
 
         // The quote is split across two elements: the big "setup" line and the
-        // small "punchline" line. Join both.
+        // small "punchline" line. Put the big line on its own line above the small.
         let big = extract(id: "ttm-advice-text-big", from: html)
         let small = extract(id: "ttm-advice-text-small", from: html)
-        return [big, small].filter { !$0.isEmpty }.joined(separator: " ")
+        return [big, small].filter { !$0.isEmpty }.joined(separator: "\n")
     }
 
     /// Pulls the text content of the element carrying `id`, up to its closing tag.

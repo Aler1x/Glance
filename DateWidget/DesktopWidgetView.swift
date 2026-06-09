@@ -18,6 +18,7 @@ final class WidgetModel {
     var quote = ""
     var temperature = "–°C"
     var weatherSymbol = "cloud"
+    var forecast: [ForecastDay] = []
     var isEditing = false
     private(set) var isRefreshing = false
 
@@ -36,6 +37,7 @@ final class WidgetModel {
         static let quoteDate = "cache.quoteDate"
         static let temperature = "cache.temperature"
         static let symbol = "cache.weatherSymbol"
+        static let forecast = "cache.forecast"
         static let weatherDate = "cache.weatherDate"
     }
 
@@ -75,6 +77,10 @@ final class WidgetModel {
         if let cached = defaults.string(forKey: Cache.quote), !cached.isEmpty { quote = cached }
         if let temp = defaults.string(forKey: Cache.temperature) { temperature = temp }
         if let symbol = defaults.string(forKey: Cache.symbol) { weatherSymbol = symbol }
+        if let data = defaults.data(forKey: Cache.forecast),
+           let decoded = try? JSONDecoder().decode([ForecastDay].self, from: data) {
+            forecast = decoded
+        }
     }
 
     private func cacheQuote() {
@@ -128,6 +134,13 @@ final class WidgetModel {
         weatherSymbol = result.symbolName
         defaults.set(result.temperature, forKey: Cache.temperature)
         defaults.set(result.symbolName, forKey: Cache.symbol)
+        // Keep the last good forecast if this fetch came back empty (transient failure).
+        if !result.daily.isEmpty {
+            forecast = result.daily
+            if let data = try? JSONEncoder().encode(result.daily) {
+                defaults.set(data, forKey: Cache.forecast)
+            }
+        }
         defaults.set(Date(), forKey: Cache.weatherDate)
     }
 
@@ -189,18 +202,29 @@ final class WidgetModel {
     }
 }
 
-// MARK: - Button frame preference
+// MARK: - Interactive frame preference
 
-private struct ButtonFrameKey: PreferenceKey {
-    static let defaultValue: CGRect = .zero
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+/// Collects the frames of every click-through-exempt control (quote button,
+/// panel switcher) so the hosting view knows where to accept mouse events.
+private struct InteractiveFramesKey: PreferenceKey {
+    static let defaultValue: [CGRect] = []
+    static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) {
+        value.append(contentsOf: nextValue())
+    }
 }
 
 // MARK: - View
 
 struct DesktopWidgetView: View {
     @Bindable var model: WidgetModel
-    var onButtonFrameChange: ((CGRect) -> Void)?
+    var onInteractiveFramesChange: (([CGRect]) -> Void)?
+
+    /// 0 = calendar, 1 = forecast.
+    @State private var page = 0
+    @State private var dragOffset: CGFloat = 0
+
+    private static let pageCount = 2
+    private static let pageSpring = Animation.spring(response: 0.38, dampingFraction: 0.82)
 
     private let settings = WidgetSettings.shared
 
@@ -208,13 +232,13 @@ struct DesktopWidgetView: View {
         GlassEffectContainer(spacing: 0) {
             HStack(alignment: .top, spacing: 0) {
                 leftPanel
-                rightPanel
+                rightPager
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
             .glassEffect(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         }
-        .frame(width: 520, height: 230)
+        .frame(width: 530, height: 230)
         .overlay {
             if model.isEditing {
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
@@ -224,7 +248,118 @@ struct DesktopWidgetView: View {
         .coordinateSpace(name: "overlay")
         .colorScheme(.dark)
         .onAppear { model.start() }
-        .onPreferenceChange(ButtonFrameKey.self) { onButtonFrameChange?($0) }
+        .onPreferenceChange(InteractiveFramesKey.self) { onInteractiveFramesChange?($0) }
+    }
+
+    // MARK: - Right pager (swipe between forecast / calendar)
+
+    private var rightPager: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let headerHeight: CGFloat = 24
+            let contentGap: CGFloat = 10
+            let contentHeight = max(0, geo.size.height - headerHeight - contentGap)
+
+            VStack(spacing: contentGap) {
+                pagerTabs
+                    .frame(height: headerHeight)
+
+                HStack(spacing: 0) {
+                    calendarPanel.frame(width: w)
+                    forecastPanel.frame(width: w)
+                }
+                .frame(width: w, height: contentHeight, alignment: .leading)
+                .offset(x: -CGFloat(page) * w + dragOffset)
+                .clipped()
+            }
+            .frame(width: w, height: geo.size.height)
+            .contentShape(Rectangle())
+            .gesture(swipeGesture(width: w))
+            .background(frameReporter)
+        }
+    }
+
+    private var pagerTabs: some View {
+        HStack(spacing: 8) {
+            pagerTab(isSelected: page == 0) {
+                Text(yearString)
+            } action: {
+                goTo(0)
+            }
+
+            pagerTab(isSelected: page == 1) {
+                HStack(spacing: 5) {
+                    Image(systemName: model.weatherSymbol)
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(settings.weatherCity)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
+            } action: {
+                goTo(1)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .background(frameReporter)
+    }
+
+    private func pagerTab<Label: View>(
+        isSelected: Bool,
+        @ViewBuilder label: () -> Label,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            label()
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .foregroundStyle(isSelected ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary.opacity(0.62)))
+                .frame(maxWidth: .infinity)
+                .frame(height: 24)
+                .padding(.horizontal, 8)
+                .background {
+                    Capsule()
+                        .fill(isSelected ? .white.opacity(0.14) : .white.opacity(0.05))
+                }
+                .overlay {
+                    Capsule()
+                        .strokeBorder(.white.opacity(isSelected ? 0.12 : 0.06), lineWidth: 1)
+                }
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func swipeGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 12)
+            .onChanged { value in
+                guard !model.isEditing else { return }
+                dragOffset = value.translation.width
+            }
+            .onEnded { value in
+                guard !model.isEditing else { return }
+                let threshold = width / 4
+                var target = page
+                if value.translation.width < -threshold { target += 1 }
+                else if value.translation.width > threshold { target -= 1 }
+                goTo(target)
+            }
+    }
+
+    private func goTo(_ index: Int) {
+        let clamped = min(max(index, 0), Self.pageCount - 1)
+        withAnimation(Self.pageSpring) {
+            page = clamped
+            dragOffset = 0
+        }
+    }
+
+    /// Reports the frame of the view it backs into `InteractiveFramesKey`.
+    private var frameReporter: some View {
+        GeometryReader { geo in
+            Color.clear.preference(
+                key: InteractiveFramesKey.self,
+                value: [geo.frame(in: .named("overlay"))]
+            )
+        }
     }
 
     // MARK: - Left panel
@@ -254,8 +389,15 @@ struct DesktopWidgetView: View {
                 .foregroundStyle(.secondary)
             }
 
-            if !model.quote.isEmpty {
-                quoteButton
+            switch settings.panelContent {
+            case .quote:
+                if !model.quote.isEmpty {
+                    quoteButton
+                }
+            case .equalizer:
+                EqualizerView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.top, 12)
             }
 
             Spacer()
@@ -278,58 +420,99 @@ struct DesktopWidgetView: View {
         }
         .buttonStyle(.plain)
         .padding(.top, 12)
-        .background(
-            GeometryReader { geo in
-                Color.clear.preference(
-                    key: ButtonFrameKey.self,
-                    value: geo.frame(in: .named("overlay"))
-                )
-            }
-        )
+        .background(frameReporter)
     }
 
     private var timeRow: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "clock")
-                .font(.system(size: 12))
-                .foregroundStyle(.tertiary)
+        ViewThatFits(in: .horizontal) {
+            clockRow(spacing: 10, labelSize: 10, valueSize: 14)
+            clockRow(spacing: 8, labelSize: 9, valueSize: 13)
+            clockRow(spacing: 6, labelSize: 8, valueSize: 12)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func clockRow(spacing: CGFloat, labelSize: CGFloat, valueSize: CGFloat) -> some View {
+        HStack(spacing: spacing) {
             ForEach(settings.clocks.filter(\.enabled)) { clock in
-                timeChip(clock.label, time(in: clock.timeZone))
+                timeChip(clock.label, time(in: clock.timeZone), labelSize: labelSize, valueSize: valueSize)
             }
         }
-        .font(.system(size: 14, weight: .medium, design: .rounded))
-        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: true, vertical: false)
     }
 
-    private func timeChip(_ label: String, _ value: String) -> some View {
+    private func timeChip(_ label: String, _ value: String, labelSize: CGFloat, valueSize: CGFloat) -> some View {
         HStack(spacing: 4) {
             Text(label)
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .font(.system(size: labelSize, weight: .semibold, design: .rounded))
                 .foregroundStyle(.tertiary)
+                .lineLimit(1)
             Text(value)
+                .font(.system(size: valueSize, weight: .medium, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
         }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
-    // MARK: - Right panel (calendar)
+    // MARK: - Forecast / calendar panels
 
-    private var rightPanel: some View {
-        VStack(spacing: 5) {
-            Text(yearString)
-                .font(.system(size: 19, weight: .semibold, design: .rounded))
+    private var forecastPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(model.forecast) { day in
+                forecastRow(day)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, 4)
+    }
+
+    private func forecastRow(_ day: ForecastDay) -> some View {
+        HStack(spacing: 10) {
+            Text(day.weekdayLabel)
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .foregroundStyle(.secondary)
+                .frame(width: 40, alignment: .leading)
+
+            Image(systemName: day.symbolName)
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+                .frame(width: 24, alignment: .center)
+
+            Spacer(minLength: 0)
+
+            Text(day.high)
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .monospacedDigit()
                 .foregroundStyle(.primary)
-                .padding(.bottom, 2)
 
+            Text(day.low)
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.tertiary)
+                .frame(width: 36, alignment: .trailing)
+        }
+        .frame(height: 26)
+    }
+
+    private var calendarPanel: some View {
+        VStack(spacing: 4) {
             HStack(spacing: 0) {
                 ForEach(0..<7, id: \.self) { i in
                     Text(["M", "T", "W", "T", "F", "S", "S"][i])
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.tertiary)
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .foregroundStyle(.secondary.opacity(0.58))
                         .frame(maxWidth: .infinity)
                 }
             }
+            .padding(.bottom, 1)
 
             LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 7),
+                columns: Array(repeating: GridItem(.flexible(), spacing: 1), count: 7),
                 spacing: 2
             ) {
                 ForEach(0..<calendarDays.count, id: \.self) { idx in
@@ -340,11 +523,18 @@ struct DesktopWidgetView: View {
                         let isToday = day == currentDayNumber
                         ZStack {
                             if isToday {
-                                Circle().fill(.tertiary).frame(width: 26, height: 26)
+                                Circle()
+                                    .fill(.white.opacity(0.15))
+                                    .frame(width: 28, height: 28)
+                                    .overlay {
+                                        Circle()
+                                            .strokeBorder(.white.opacity(0.10), lineWidth: 1)
+                                    }
                             }
                             Text("\(day)")
-                                .font(.system(size: 12, weight: isToday ? .bold : .regular))
-                                .foregroundStyle(.secondary)
+                                .font(.system(size: 12, weight: isToday ? .bold : .medium, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(isToday ? .primary : .secondary)
                         }
                         .frame(maxWidth: .infinity)
                         .frame(height: 26)

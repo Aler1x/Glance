@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import Observation
 import SwiftUI
 
 @main
@@ -20,7 +21,7 @@ struct DateWidgetApp: App {
 // MARK: - App delegate
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private static let widgetSize = CGSize(width: 520, height: 230)
+    private static let widgetSize = CGSize(width: 530, height: 230)
     private static let originDefaultsKey = "DesktopWidget.origin"
 
     private let model = WidgetModel()
@@ -38,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupWindow()
         setupContextMenu()
         applyWindowSettings()
+        applyBackingSettings()
         observeScreenChanges()
         restoreOrigin()
         window.orderFront(nil)
@@ -78,8 +80,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         hostingView = ClickThroughHostingView(
             rootView: AnyView(
-                DesktopWidgetView(model: model) { [weak self] frame in
-                    self?.hostingView.interactiveRect = frame
+                DesktopWidgetView(model: model) { [weak self] frames in
+                    self?.hostingView.interactiveRects = frames
                 }
             )
         )
@@ -93,8 +95,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func applyWindowSettings() {
         window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
-        backingView.isHidden = !settings.contrastBacking
-        backingView.alphaValue = settings.backingOpacity
+    }
+
+    /// Keeps the contrast backing in sync with Settings live, re-registering
+    /// observation each time so changes apply without an app restart.
+    private func applyBackingSettings() {
+        withObservationTracking {
+            backingView.isHidden = !settings.contrastBacking
+            backingView.alphaValue = settings.backingOpacity
+        } onChange: { [weak self] in
+            DispatchQueue.main.async { self?.applyBackingSettings() }
+        }
     }
 
     private func observeScreenChanges() {
@@ -278,11 +289,12 @@ final class OverlayWindow: NSPanel {
 
 // MARK: - Click-through hosting view
 
-/// Passes left-clicks through to the desktop except inside `interactiveRect`
-/// (the quote button). Right-clicks anywhere surface the context menu, and in
-/// edit mode the whole view is grabbable so dragging repositions the window.
+/// Passes left-clicks through to the desktop except inside `interactiveRects`
+/// (the quote button and the panel switcher). Right-clicks anywhere surface the
+/// context menu, and in edit mode the whole view is grabbable so dragging
+/// repositions the window.
 final class ClickThroughHostingView: NSHostingView<AnyView> {
-    var interactiveRect: CGRect = .zero
+    var interactiveRects: [CGRect] = []
     var isEditing = false
     var onDragEnded: (() -> Void)?
 
@@ -290,7 +302,7 @@ final class ClickThroughHostingView: NSHostingView<AnyView> {
         if isEditing { return self }
         // NSView uses bottom-left origin; flip Y to match SwiftUI's top-left origin.
         let swiftUIPoint = CGPoint(x: point.x, y: bounds.height - point.y)
-        return interactiveRect.contains(swiftUIPoint) ? super.hitTest(point) : nil
+        return interactiveRects.contains(where: { $0.contains(swiftUIPoint) }) ? super.hitTest(point) : nil
     }
 
     override func mouseDragged(with event: NSEvent) {

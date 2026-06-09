@@ -88,6 +88,10 @@ struct SettingsView: View {
 
     private var appearanceSection: some View {
         Section {
+            Picker("Left panel", selection: $settings.panelContent) {
+                ForEach(PanelContent.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
             Toggle("Contrast backing", isOn: $settings.contrastBacking)
             if settings.contrastBacking {
                 HStack {

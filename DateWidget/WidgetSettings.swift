@@ -28,6 +28,19 @@ struct ClockConfig: Codable, Identifiable, Equatable {
     ]
 }
 
+// MARK: - Panel content
+
+enum PanelContent: String, CaseIterable, Identifiable {
+    case quote, equalizer
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .quote: "Quote"
+        case .equalizer: "Equalizer"
+        }
+    }
+}
+
 // MARK: - Login item
 
 enum LoginItem {
@@ -62,6 +75,7 @@ final class WidgetSettings {
         static let fahrenheit = "settings.useFahrenheit"
         static let contrast = "settings.contrastBacking"
         static let opacity = "settings.backingOpacity"
+        static let panelContent = "settings.panelContent"
     }
 
     var clocks: [ClockConfig] { didSet { saveClocks() } }
@@ -71,6 +85,7 @@ final class WidgetSettings {
     var useFahrenheit: Bool { didSet { defaults.set(useFahrenheit, forKey: Key.fahrenheit) } }
     var contrastBacking: Bool { didSet { defaults.set(contrastBacking, forKey: Key.contrast) } }
     var backingOpacity: Double { didSet { defaults.set(backingOpacity, forKey: Key.opacity) } }
+    var panelContent: PanelContent { didSet { defaults.set(panelContent.rawValue, forKey: Key.panelContent) } }
 
     private init() {
         if let data = defaults.data(forKey: Key.clocks),
@@ -85,6 +100,7 @@ final class WidgetSettings {
         useFahrenheit = defaults.bool(forKey: Key.fahrenheit)
         contrastBacking = defaults.bool(forKey: Key.contrast)
         backingOpacity = defaults.object(forKey: Key.opacity) as? Double ?? 0.5
+        panelContent = defaults.string(forKey: Key.panelContent).flatMap(PanelContent.init) ?? .quote
     }
 
     private func saveClocks() {
