@@ -19,10 +19,56 @@ import os
 /// `onActive` fires on the main queue when audible signal starts/stops, so the view
 /// can animate only while something is actually playing.
 final class SystemAudioTap {
+    enum StartFailure: Error, Equatable {
+        case permissionDenied
+        case noOutputDevice
+        case createTap(OSStatus)
+        case createAggregate(OSStatus)
+        case createIOProc(OSStatus)
+        case startDevice(OSStatus)
+
+        var userMessage: String {
+            switch self {
+            case .permissionDenied:
+                return "Allow DateWidget to capture audio in System Settings."
+            case .noOutputDevice:
+                return "No output device is available for the equalizer."
+            case let .createTap(status):
+                return "Couldn't create the audio tap (\(Self.describe(status)))."
+            case let .createAggregate(status):
+                return "Couldn't create the audio device (\(Self.describe(status)))."
+            case let .createIOProc(status):
+                return "Couldn't attach the audio listener (\(Self.describe(status)))."
+            case let .startDevice(status):
+                return "Couldn't start audio capture (\(Self.describe(status)))."
+            }
+        }
+
+        private static func describe(_ status: OSStatus) -> String {
+            "\(status) / \(Self.fourCharacterCode(status))"
+        }
+
+        private static func fourCharacterCode(_ status: OSStatus) -> String {
+            let value = UInt32(bitPattern: status)
+            let bytes = [
+                UInt8((value >> 24) & 0xff),
+                UInt8((value >> 16) & 0xff),
+                UInt8((value >> 8) & 0xff),
+                UInt8(value & 0xff),
+            ]
+            let scalars = bytes.map { byte -> UnicodeScalar in
+                let printable = (32...126).contains(byte) ? byte : UInt8(ascii: ".")
+                return UnicodeScalar(printable)
+            }
+            return String(String.UnicodeScalarView(scalars))
+        }
+    }
+
     let bandCount: Int
 
     /// Called on the main queue when audible signal starts (`true`) or stops (`false`).
     var onActive: ((Bool) -> Void)?
+    var onFailure: ((StartFailure) -> Void)?
 
     // Tunables — adjust to taste if bars sit too low/high.
     private let dbFloor: Float = -55          // magnitude (dB) mapped to a flat bar
@@ -31,6 +77,8 @@ final class SystemAudioTap {
     private let decay: Float = 0.12           // fall smoothing (slow, EQ-like ballistics)
     private let signalThreshold: Float = 6e-4 // RMS above which we consider audio "playing"
     private let hangover: Double = 0.35       // seconds of silence tolerated before going idle
+    private let analysisRate: Double = 15     // enough motion for the small widget, less CPU churn
+    private let maxVisualFrequency: Double = 12_000
 
     // Core Audio objects
     private var tapID = AudioObjectID(kAudioObjectUnknown)
@@ -59,6 +107,7 @@ final class SystemAudioTap {
     private var publishedLevels: [Float]
     private var lastActive = false
     private var silentSamples = Int.max
+    private var framesUntilAnalysis = 0
     private var loggedFirstBuffer = false
 
     init(bandCount: Int = 15, fftSize: Int = 1024) {
@@ -79,11 +128,12 @@ final class SystemAudioTap {
         smoothedLevels = [Float](repeating: 0, count: bandCount)
         publishedLevels = [Float](repeating: 0, count: bandCount)
 
-        // Log-spaced band edges across the usable spectrum (skip DC).
-        let minBin = 1, maxBin = fftSize / 2
-        bandEdges = (0...bandCount).map { b in
-            Int((Double(minBin) * pow(Double(maxBin) / Double(minBin), Double(b) / Double(bandCount))).rounded())
-        }
+        bandEdges = Self.makeBandEdges(
+            bandCount: bandCount,
+            fftSize: fftSize,
+            sampleRate: sampleRate,
+            maxFrequency: maxVisualFrequency
+        )
 
         lock.initialize(to: os_unfair_lock())
     }
@@ -96,10 +146,20 @@ final class SystemAudioTap {
 
     // MARK: Lifecycle
 
-    func start() {
-        guard !running else { return }
-        running = startCapture()
-        if !running { teardown() }
+    @discardableResult
+    func start() -> Bool {
+        guard !running else { return true }
+
+        switch startCapture() {
+        case .success:
+            running = true
+            return true
+        case let .failure(failure):
+            NSLog("SystemAudioTap: \(failure.userMessage)")
+            teardown()
+            DispatchQueue.main.async { [onFailure] in onFailure?(failure) }
+            return false
+        }
     }
 
     func stop() {
@@ -117,20 +177,21 @@ final class SystemAudioTap {
 
     // MARK: Capture setup
 
-    private func startCapture() -> Bool {
-        let desc = CATapDescription(monoGlobalTapButExcludeProcesses: [])
+    private func startCapture() -> Result<Void, StartFailure> {
+        guard let outputUID = Self.defaultOutputDeviceUID() else { return .failure(.noOutputDevice) }
+
+        let desc = CATapDescription(__excludingProcesses: [], andDeviceUID: outputUID, withStream: 0)
+        desc.name = "DateWidget EQ Tap"
         desc.isPrivate = true
         desc.muteBehavior = .unmuted
 
         var newTap = AudioObjectID(kAudioObjectUnknown)
-        guard AudioHardwareCreateProcessTap(desc, &newTap) == noErr, newTap != kAudioObjectUnknown else {
-            NSLog("SystemAudioTap: failed to create process tap")
-            return false
+        let tapStatus = AudioHardwareCreateProcessTap(desc, &newTap)
+        guard tapStatus == noErr, newTap != kAudioObjectUnknown else {
+            return .failure(tapStatus == kAudioDevicePermissionsError ? .permissionDenied : .createTap(tapStatus))
         }
         tapID = newTap
         readTapFormat()
-
-        guard let outputUID = Self.defaultOutputDeviceUID() else { return false }
 
         let aggregate: [String: Any] = [
             kAudioAggregateDeviceNameKey as String: "DateWidget EQ Tap",
@@ -148,10 +209,9 @@ final class SystemAudioTap {
         ]
 
         var agg = AudioObjectID(kAudioObjectUnknown)
-        guard AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &agg) == noErr,
-              agg != kAudioObjectUnknown else {
-            NSLog("SystemAudioTap: failed to create aggregate device")
-            return false
+        let aggregateStatus = AudioHardwareCreateAggregateDevice(aggregate as CFDictionary, &agg)
+        guard aggregateStatus == noErr, agg != kAudioObjectUnknown else {
+            return .failure(aggregateStatus == kAudioDevicePermissionsError ? .permissionDenied : .createAggregate(aggregateStatus))
         }
         aggregateID = agg
 
@@ -159,18 +219,18 @@ final class SystemAudioTap {
             self?.process(inInputData)
         }
         var proc: AudioDeviceIOProcID?
-        guard AudioDeviceCreateIOProcIDWithBlock(&proc, aggregateID, nil, block) == noErr, let proc else {
-            NSLog("SystemAudioTap: failed to create IO proc")
-            return false
+        let ioProcStatus = AudioDeviceCreateIOProcIDWithBlock(&proc, aggregateID, nil, block)
+        guard ioProcStatus == noErr, let proc else {
+            return .failure(ioProcStatus == kAudioDevicePermissionsError ? .permissionDenied : .createIOProc(ioProcStatus))
         }
         ioProcID = proc
 
-        guard AudioDeviceStart(aggregateID, proc) == noErr else {
-            NSLog("SystemAudioTap: failed to start device")
-            return false
+        let startStatus = AudioDeviceStart(aggregateID, proc)
+        guard startStatus == noErr else {
+            return .failure(startStatus == kAudioDevicePermissionsError ? .permissionDenied : .startDevice(startStatus))
         }
         NSLog("SystemAudioTap: started (sampleRate=\(sampleRate))")
-        return true
+        return .success(())
     }
 
     private func teardown() {
@@ -192,6 +252,7 @@ final class SystemAudioTap {
         os_unfair_lock_unlock(lock)
         for i in smoothedLevels.indices { smoothedLevels[i] = 0 }
         silentSamples = Int.max
+        framesUntilAnalysis = 0
     }
 
     private func readTapFormat() {
@@ -203,6 +264,29 @@ final class SystemAudioTap {
             mElement: kAudioObjectPropertyElementMain)
         if AudioObjectGetPropertyData(tapID, &addr, 0, nil, &size, &asbd) == noErr, asbd.mSampleRate > 0 {
             sampleRate = asbd.mSampleRate
+            NSLog("SystemAudioTap: format sampleRate=\(asbd.mSampleRate) channels=\(asbd.mChannelsPerFrame) formatID=\(asbd.mFormatID) flags=\(asbd.mFormatFlags) bytesPerFrame=\(asbd.mBytesPerFrame)")
+            bandEdges = Self.makeBandEdges(
+                bandCount: bandCount,
+                fftSize: fftSize,
+                sampleRate: sampleRate,
+                maxFrequency: maxVisualFrequency
+            )
+        }
+    }
+
+    private static func makeBandEdges(
+        bandCount: Int,
+        fftSize: Int,
+        sampleRate: Double,
+        maxFrequency: Double
+    ) -> [Int] {
+        let nyquist = sampleRate / 2
+        let binHz = sampleRate / Double(fftSize)
+        let minBin = max(1, Int((60 / binHz).rounded()))
+        let maxBin = min(fftSize / 2, max(minBin + bandCount, Int((min(maxFrequency, nyquist * 0.9) / binHz).rounded())))
+
+        return (0...bandCount).map { b in
+            Int((Double(minBin) * pow(Double(maxBin) / Double(minBin), Double(b) / Double(bandCount))).rounded())
         }
     }
 
@@ -230,31 +314,55 @@ final class SystemAudioTap {
 
     private func process(_ bufferList: UnsafePointer<AudioBufferList>) {
         let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: bufferList))
-        guard let first = buffers.first, let data = first.mData else { return }
-        let channels = max(1, Int(first.mNumberChannels))
-        let frames = Int(first.mDataByteSize) / MemoryLayout<Float>.size / channels
+        guard let first = buffers.first else { return }
+
+        let frames = buffers.reduce(Int.max) { partial, buffer in
+            guard buffer.mData != nil else { return partial }
+            let channels = max(1, Int(buffer.mNumberChannels))
+            let bufferFrames = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size / channels
+            return min(partial, bufferFrames)
+        }
         guard frames > 0 else { return }
-        let raw = data.assumingMemoryBound(to: Float.self)
 
         if !loggedFirstBuffer {
             loggedFirstBuffer = true
             var peak: Float = 0
-            vDSP_maxmgv(raw, 1, &peak, vDSP_Length(frames * channels))
-            NSLog("SystemAudioTap: first buffer channels=\(channels) frames=\(frames) peak=\(peak)")
+            for buffer in buffers {
+                guard let data = buffer.mData else { continue }
+                let channels = max(1, Int(buffer.mNumberChannels))
+                let raw = data.assumingMemoryBound(to: Float.self)
+                var bufferPeak: Float = 0
+                vDSP_maxmgv(raw, 1, &bufferPeak, vDSP_Length(frames * channels))
+                peak = max(peak, bufferPeak)
+            }
+            NSLog("SystemAudioTap: first buffer buffers=\(buffers.count) channels=\(Int(first.mNumberChannels)) frames=\(frames) peak=\(peak)")
         }
 
-        if channels == 1 {
-            appendToWindow(raw, count: frames)
-        } else {
-            let n = min(frames, mixdown.count)
-            for f in 0..<n {
-                var sum: Float = 0
-                for c in 0..<channels { sum += raw[f * channels + c] }
-                mixdown[f] = sum / Float(channels)
+        let n = min(frames, mixdown.count)
+        for frame in 0..<n {
+            var sum: Float = 0
+            var channelCount = 0
+
+            for buffer in buffers {
+                guard let data = buffer.mData else { continue }
+                let channels = max(1, Int(buffer.mNumberChannels))
+                let raw = data.assumingMemoryBound(to: Float.self)
+                for channel in 0..<channels {
+                    sum += raw[frame * channels + channel]
+                }
+                channelCount += channels
             }
-            mixdown.withUnsafeBufferPointer { appendToWindow($0.baseAddress!, count: n) }
+
+            mixdown[frame] = channelCount > 0 ? sum / Float(channelCount) : 0
         }
-        updateActivity(frames: frames)
+        mixdown.withUnsafeBufferPointer { appendToWindow($0.baseAddress!, count: n) }
+
+        let audible = updateActivity(frames: frames)
+        guard lastActive else { return }
+        guard audible else { return }
+        framesUntilAnalysis -= frames
+        guard framesUntilAnalysis <= 0 else { return }
+        framesUntilAnalysis += max(1, Int(sampleRate / analysisRate))
         computeFFT()
     }
 
@@ -268,20 +376,23 @@ final class SystemAudioTap {
         }
     }
 
-    private func updateActivity(frames: Int) {
+    private func updateActivity(frames: Int) -> Bool {
         var rms: Float = 0
         vDSP_rmsqv(sampleBuffer, 1, &rms, vDSP_Length(fftSize))
-        if rms > signalThreshold {
+        let audible = rms > signalThreshold
+        if audible {
             silentSamples = 0
         } else if silentSamples < Int.max - frames {
             silentSamples += frames
         }
         let active = Double(silentSamples) < sampleRate * hangover
         if active != lastActive {
+            if active { framesUntilAnalysis = 0 }
             lastActive = active
             let callback = onActive
             DispatchQueue.main.async { callback?(active) }
         }
+        return audible
     }
 
     private func computeFFT() {
